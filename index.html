@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DJ Song Queue</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0d0d0d;
+            color: white;
+            margin: 0;
+            padding: 18px;
+        }
+
+        .card {
+            max-width: 720px;
+            margin: auto;
+            background: #1a1a1a;
+            padding: 18px;
+            border-radius: 16px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.35);
+        }
+
+        h1, h2 {
+            margin-top: 0;
+        }
+
+        input, button {
+            width: 100%;
+            font-size: 17px;
+            padding: 12px;
+            margin-top: 10px;
+            border-radius: 10px;
+            border: none;
+            box-sizing: border-box;
+        }
+
+        input {
+            background: #2a2a2a;
+            color: white;
+            border: 1px solid #444;
+        }
+
+        button {
+            background: #1db954;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button.secondary {
+            background: #444;
+        }
+
+        button.danger {
+            background: #c0392b;
+        }
+
+        button.small {
+            width: auto;
+            padding: 9px 12px;
+            font-size: 14px;
+            margin-left: 6px;
+        }
+
+        .song {
+            background: #292929;
+            padding: 13px;
+            margin-top: 10px;
+            border-radius: 12px;
+            border-left: 5px solid #1db954;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .played {
+            opacity: 0.45;
+            border-left-color: #777;
+        }
+
+        .song-title {
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .song-meta {
+            color: #aaa;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .qr {
+            width: 220px;
+            height: 220px;
+            background: white;
+            padding: 10px;
+            border-radius: 12px;
+            display: block;
+            margin: 14px auto;
+        }
+
+        .link {
+            color: #1db954;
+            word-break: break-all;
+        }
+
+        .muted {
+            color: #aaa;
+            font-size: 14px;
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        .row-buttons {
+            white-space: nowrap;
+        }
+
+        @media (max-width: 650px) {
+            .song {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .row-buttons {
+                white-space: normal;
+            }
+
+            button.small {
+                margin-left: 0;
+                margin-right: 6px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+
+    <script type="module">
+        import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+        // Replace these with your Supabase values.
+        const SUPABASE_URL = "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE";
+        const SUPABASE_ANON_KEY = "PASTE_YOUR_SUPABASE_ANON_KEY_HERE";
+
+        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const app = document.getElementById("app");
+
+        let realtimeChannel = null;
+
+        function setHtml(html) {
+            app.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            return String(text ?? "").replace(/[&<>"']/g, function(char) {
+                return {
+                    "&": "&amp;",
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    '"': "&quot;",
+                    "'": "&#039;"
+                }[char];
+            });
+        }
+
+        function getRoute() {
+            return window.location.hash.replace(/^#/, "") || "";
+        }
+
+        function siteBaseUrl() {
+            return window.location.origin + window.location.pathname;
+        }
+
+        function formatTime(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit"
+            });
+        }
+
+        function clearRealtime() {
+            if (realtimeChannel) {
+                supabase.removeChannel(realtimeChannel);
+                realtimeChannel = null;
+            }
+        }
+
+        async function renderHome() {
+            clearRealtime();
+
+            setHtml(`
+                <div class="card center">
+                    <h1>DJ Song Queue</h1>
+                    <p class="muted">
+                        Simple QR-code song requests for a party.
+                    </p>
+
+                    <button onclick="location.hash='host'">
+                        Create / Host a Party
+                    </button>
+                </div>
+            `);
+        }
+
+        async function renderCreateHost() {
+            clearRealtime();
+
+            setHtml(`
+                <div class="card">
+                    <h1>Create Party</h1>
+
+                    <input id="partyName" placeholder="Party name, example: Friday DJ Night">
+
+                    <button id="createBtn">Create Party</button>
+
+                    <p class="muted">
+                        This will create a private DJ host page and a public guest QR code.
+                    </p>
+
+                    <button class="secondary" onclick="location.hash=''">Back</button>
+                </div>
+            `);
+
+            document.getElementById("createBtn").onclick = async function() {
+                const partyName = document.getElementById("partyName").value.trim() || "DJ Party";
+
+                const { data, error } = await supabase.rpc("create_party", {
+                    p_name: partyName
+                });
+
+                if (error) {
+                    alert("Could not create party: " + error.message);
+                    return;
+                }
+
+                const party = data[0];
+                location.hash = "host/" + party.host_token;
+            };
+        }
+
+        async function renderHostDashboard(hostToken) {
+            clearRealtime();
+
+            const { data, error } = await supabase.rpc("get_host_event", {
+                p_host_token: hostToken
+            });
+
+            if (error || !data || data.length === 0) {
+                setHtml(`
+                    <div class="card">
+                        <h1>Host page not found</h1>
+                        <p class="muted">The host token is missing or invalid.</p>
+                        <button onclick="location.hash=''">Home</button>
+                    </div>
+                `);
+                return;
+            }
+
+            const event = data[0];
+            const guestUrl = siteBaseUrl() + "#join/" + event.guest_code;
+
+            setHtml(`
+                <div class="card">
+                    <h1>${escapeHtml(event.name)}</h1>
+                    <p class="muted">DJ host screen</p>
+
+                    <div class="center">
+                        <h2>Guest QR Code</h2>
+                        <canvas id="qrCanvas" class="qr"></canvas>
+                        <div class="link">${escapeHtml(guestUrl)}</div>
+                    </div>
+
+                    <hr style="border-color:#333; margin: 22px 0;">
+
+                    <button class="secondary" id="clearPlayedBtn">Clear Played</button>
+
+                    <h2 style="margin-top: 20px;">Queue</h2>
+                    <div id="queue"></div>
+                </div>
+            `);
+
+            QRCode.toCanvas(document.getElementById("qrCanvas"), guestUrl, {
+                width: 220,
+                margin: 1
+            });
+
+            document.getElementById("clearPlayedBtn").onclick = async function() {
+                await supabase.rpc("clear_played_requests", {
+                    p_host_token: hostToken
+                });
+
+                loadHostQueue(event.event_id, hostToken);
+            };
+
+            await loadHostQueue(event.event_id, hostToken);
+
+            realtimeChannel = supabase
+                .channel("host-requests-" + event.event_id)
+                .on(
+                    "postgres_changes",
+                    {
+                        event: "*",
+                        schema: "public",
+                        table: "requests",
+                        filter: "event_id=eq." + event.event_id
+                    },
+                    function() {
+                        loadHostQueue(event.event_id, hostToken);
+                    }
+                )
+                .subscribe();
+        }
+
+        async function loadHostQueue(eventId, hostToken) {
+            const queue = document.getElementById("queue");
+
+            const { data, error } = await supabase
+                .from("requests")
+                .select("*")
+                .eq("event_id", eventId)
+                .neq("status", "deleted")
+                .order("created_at", { ascending: true });
+
+            if (error) {
+                queue.innerHTML = `<p class="muted">Could not load queue.</p>`;
+                return;
+            }
+
+            if (!data || data.length === 0) {
+                queue.innerHTML = `<p class="muted">No requests yet.</p>`;
+                return;
+            }
+
+            queue.innerHTML = data.map((item, index) => {
+                const artist = item.artist ? " — " + item.artist : "";
+                const name = item.guest_name ? "Requested by " + item.guest_name : "Anonymous request";
+                const playedClass = item.status === "played" ? " played" : "";
+
+                return `
+                    <div class="song${playedClass}">
+                        <div>
+                            <div class="song-title">
+                                ${index + 1}. ${escapeHtml(item.song)}${escapeHtml(artist)}
+                            </div>
+                            <div class="song-meta">
+                                ${escapeHtml(name)} • ${formatTime(item.created_at)} • ${escapeHtml(item.status)}
+                            </div>
+                        </div>
+
+                        <div class="row-buttons">
+                            <button class="small" onclick="markPlayed('${hostToken}', '${item.id}')">
+                                Played
+                            </button>
+                            <button class="small danger" onclick="deleteRequest('${hostToken}', '${item.id}')">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        window.markPlayed = async function(hostToken, requestId) {
+            await supabase.rpc("mark_request_played", {
+                p_host_token: hostToken,
+                p_request_id: requestId
+            });
+        };
+
+        window.deleteRequest = async function(hostToken, requestId) {
+            await supabase.rpc("delete_request", {
+                p_host_token: hostToken,
+                p_request_id: requestId
+            });
+        };
+
+        async function renderGuestPage(guestCode) {
+            clearRealtime();
+
+            const { data, error } = await supabase
+                .from("events")
+                .select("*")
+                .eq("guest_code", guestCode)
+                .eq("is_active", true)
+                .single();
+
+            if (error || !data) {
+                setHtml(`
+                    <div class="card">
+                        <h1>Party not found</h1>
+                        <p class="muted">The QR code or guest code is invalid.</p>
+                    </div>
+                `);
+                return;
+            }
+
+            const event = data;
+
+            setHtml(`
+                <div class="card">
+                    <h1>${escapeHtml(event.name)}</h1>
+                    <p class="muted">Request a song</p>
+
+                    <input id="songInput" placeholder="Song name">
+                    <input id="artistInput" placeholder="Artist, optional">
+                    <input id="nameInput" placeholder="Your name, optional">
+
+                    <button id="submitBtn">Submit Song</button>
+
+                    <p id="statusText" class="muted"></p>
+
+                    <hr style="border-color:#333; margin: 22px 0;">
+
+                    <h2>Current Requests</h2>
+                    <div id="guestQueue"></div>
+                </div>
+            `);
+
+            document.getElementById("submitBtn").onclick = async function() {
+                const song = document.getElementById("songInput").value.trim();
+                const artist = document.getElementById("artistInput").value.trim();
+                const guestName = document.getElementById("nameInput").value.trim();
+
+                if (!song) {
+                    document.getElementById("statusText").innerText = "Type a song name first.";
+                    return;
+                }
+
+                const { error } = await supabase
+                    .from("requests")
+                    .insert({
+                        event_id: event.id,
+                        song: song,
+                        artist: artist,
+                        guest_name: guestName,
+                        status: "pending"
+                    });
+
+                if (error) {
+                    document.getElementById("statusText").innerText = "Could not submit song.";
+                    return;
+                }
+
+                document.getElementById("songInput").value = "";
+                document.getElementById("artistInput").value = "";
+                document.getElementById("statusText").innerText = "Song submitted.";
+                loadGuestQueue(event.id);
+            };
+
+            await loadGuestQueue(event.id);
+
+            realtimeChannel = supabase
+                .channel("guest-requests-" + event.id)
+                .on(
+                    "postgres_changes",
+                    {
+                        event: "*",
+                        schema: "public",
+                        table: "requests",
+                        filter: "event_id=eq." + event.id
+                    },
+                    function() {
+                        loadGuestQueue(event.id);
+                    }
+                )
+                .subscribe();
+        }
+
+        async function loadGuestQueue(eventId) {
+            const queue = document.getElementById("guestQueue");
+
+            const { data, error } = await supabase
+                .from("requests")
+                .select("*")
+                .eq("event_id", eventId)
+                .eq("status", "pending")
+                .order("created_at", { ascending: true });
+
+            if (error) {
+                queue.innerHTML = `<p class="muted">Could not load queue.</p>`;
+                return;
+            }
+
+            if (!data || data.length === 0) {
+                queue.innerHTML = `<p class="muted">No requests yet.</p>`;
+                return;
+            }
+
+            queue.innerHTML = data.map((item, index) => {
+                const artist = item.artist ? " — " + item.artist : "";
+                const name = item.guest_name ? "Requested by " + item.guest_name : "Anonymous request";
+
+                return `
+                    <div class="song">
+                        <div>
+                            <div class="song-title">
+                                ${index + 1}. ${escapeHtml(item.song)}${escapeHtml(artist)}
+                            </div>
+                            <div class="song-meta">
+                                ${escapeHtml(name)}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        async function route() {
+            const route = getRoute();
+
+            if (!route) {
+                await renderHome();
+                return;
+            }
+
+            if (route === "host") {
+                await renderCreateHost();
+                return;
+            }
+
+            if (route.startsWith("host/")) {
+                const hostToken = route.split("/")[1];
+                await renderHostDashboard(hostToken);
+                return;
+            }
+
+            if (route.startsWith("join/")) {
+                const guestCode = route.split("/")[1];
+                await renderGuestPage(guestCode);
+                return;
+            }
+
+            await renderHome();
+        }
+
+        window.addEventListener("hashchange", route);
+        route();
+    </script>
+</body>
+</html>
