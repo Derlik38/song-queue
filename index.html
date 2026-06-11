@@ -146,9 +146,9 @@
     <script type="module">
     import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-    // Replace these with your Supabase values.
-    const SUPABASE_URL = "https://gumjvmyuysjpjqmzsgpu.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd1bWp2bXl1eXNqcGpxbXpzZ3B1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTUxMjgsImV4cCI6MjA5NjY5MTEyOH0.UJqRil-1z6q2qEl1b-t73v-TcU2oju0pOTamxFGBgRo";
+    // Replace these with your real Supabase values.
+    const SUPABASE_URL = "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE";
+    const SUPABASE_ANON_KEY = "PASTE_YOUR_SUPABASE_ANON_KEY_HERE";
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     const app = document.getElementById("app");
@@ -158,6 +158,7 @@
 
     let currentHostEventId = null;
     let currentHostToken = null;
+    let currentSortMode = "default";
 
     function setHtml(html) {
         app.innerHTML = html;
@@ -205,6 +206,7 @@
 
         currentHostEventId = null;
         currentHostToken = null;
+        currentSortMode = "default";
     }
 
     async function renderHome() {
@@ -236,7 +238,7 @@
                 <button id="createBtn">Create Party</button>
 
                 <p class="muted">
-                    This will create a private DJ host page and a public guest QR code.
+                    This creates a private DJ page and a public guest QR code.
                 </p>
 
                 <button class="secondary" onclick="location.hash=''">Back</button>
@@ -283,6 +285,7 @@
 
         currentHostEventId = event.event_id;
         currentHostToken = hostToken;
+        currentSortMode = "default";
 
         setHtml(`
             <div class="card">
@@ -306,6 +309,26 @@
                 <button class="secondary" id="clearPlayedBtn">Clear Played</button>
 
                 <h2 style="margin-top: 20px;">Queue</h2>
+
+                <label class="muted" for="sortMode">Sort mode:</label>
+                <select
+                    id="sortMode"
+                    style="
+                        width:100%;
+                        font-size:17px;
+                        padding:12px;
+                        margin-top:8px;
+                        margin-bottom:12px;
+                        border-radius:10px;
+                        background:#2a2a2a;
+                        color:white;
+                        border:1px solid #444;
+                    "
+                >
+                    <option value="default">Default order</option>
+                    <option value="popular">Most popular requests</option>
+                </select>
+
                 <div id="queue"></div>
             </div>
         `);
@@ -329,9 +352,13 @@
             loadHostQueue(event.event_id, hostToken);
         };
 
+        document.getElementById("sortMode").onchange = function() {
+            currentSortMode = this.value;
+            loadHostQueue(event.event_id, hostToken);
+        };
+
         await loadHostQueue(event.event_id, hostToken);
 
-        // Realtime update
         realtimeChannel = supabase
             .channel("host-requests-" + event.event_id)
             .on(
@@ -348,13 +375,20 @@
             )
             .subscribe();
 
-        // Backup polling update, in case realtime is slow or disabled
         refreshTimer = setInterval(function() {
             loadHostQueue(event.event_id, hostToken);
         }, 2000);
     }
 
     async function loadHostQueue(eventId, hostToken) {
+        if (currentSortMode === "popular") {
+            await loadPopularHostQueue(eventId, hostToken);
+        } else {
+            await loadDefaultHostQueue(eventId, hostToken);
+        }
+    }
+
+    async function loadDefaultHostQueue(eventId, hostToken) {
         const queue = document.getElementById("queue");
 
         if (!queue) {
@@ -363,7 +397,15 @@
 
         const { data, error } = await supabase
             .from("requests")
-            .select("*")
+            .select(`
+                *,
+                song_groups:song_group_id (
+                    id,
+                    display_title,
+                    display_artist,
+                    normalized_key
+                )
+            `)
             .eq("event_id", eventId)
             .neq("status", "deleted")
             .order("created_at", { ascending: true });
@@ -383,6 +425,15 @@
             const name = item.guest_name ? "Requested by " + item.guest_name : "Anonymous request";
             const playedClass = item.status === "played" ? " played" : "";
 
+            let matchText = "";
+            if (item.match_method === "normalized_exact") {
+                matchText = " • matched duplicate";
+            } else if (item.match_method === "new_group") {
+                matchText = " • new song";
+            } else if (item.match_method === "backfilled") {
+                matchText = " • backfilled";
+            }
+
             return `
                 <div class="song${playedClass}">
                     <div>
@@ -390,7 +441,7 @@
                             ${index + 1}. ${escapeHtml(item.song)}${escapeHtml(artist)}
                         </div>
                         <div class="song-meta">
-                            ${escapeHtml(name)} • ${formatTime(item.created_at)} • ${escapeHtml(item.status)}
+                            ${escapeHtml(name)} • ${formatTime(item.created_at)} • ${escapeHtml(item.status)}${escapeHtml(matchText)}
                         </div>
                     </div>
 
@@ -400,6 +451,130 @@
                         </button>
 
                         <button class="small danger" onclick="deleteRequest('${hostToken}', '${item.id}')">
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join("");
+    }
+
+    async function loadPopularHostQueue(eventId, hostToken) {
+        const queue = document.getElementById("queue");
+
+        if (!queue) {
+            return;
+        }
+
+        const { data, error } = await supabase
+            .from("requests")
+            .select(`
+                *,
+                song_groups:song_group_id (
+                    id,
+                    display_title,
+                    display_artist,
+                    normalized_key
+                )
+            `)
+            .eq("event_id", eventId)
+            .neq("status", "deleted")
+            .order("created_at", { ascending: true });
+
+        if (error) {
+            queue.innerHTML = `<p class="muted">Could not load popular queue: ${escapeHtml(error.message)}</p>`;
+            return;
+        }
+
+        if (!data || data.length === 0) {
+            queue.innerHTML = `<p class="muted">No requests yet.</p>`;
+            return;
+        }
+
+        const groups = new Map();
+
+        data.forEach((item) => {
+            const groupId = item.song_group_id || item.id;
+            const groupData = item.song_groups || null;
+
+            if (!groups.has(groupId)) {
+                groups.set(groupId, {
+                    groupId: groupId,
+                    displayTitle: groupData ? groupData.display_title : item.song,
+                    displayArtist: groupData ? groupData.display_artist : item.artist,
+                    firstCreatedAt: item.created_at,
+                    requests: [],
+                    pendingCount: 0,
+                    playedCount: 0
+                });
+            }
+
+            const group = groups.get(groupId);
+            group.requests.push(item);
+
+            if (item.status === "pending") {
+                group.pendingCount += 1;
+            }
+
+            if (item.status === "played") {
+                group.playedCount += 1;
+            }
+        });
+
+        const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+            const voteDiff = b.requests.length - a.requests.length;
+
+            if (voteDiff !== 0) {
+                return voteDiff;
+            }
+
+            return new Date(a.firstCreatedAt) - new Date(b.firstCreatedAt);
+        });
+
+        queue.innerHTML = sortedGroups.map((group, index) => {
+            const artist = group.displayArtist ? " — " + group.displayArtist : "";
+            const allPlayed = group.pendingCount === 0 && group.playedCount > 0;
+            const playedClass = allPlayed ? " played" : "";
+
+            const requestList = group.requests.map((request) => {
+                const requestArtist = request.artist ? " — " + request.artist : "";
+                const requestName = request.guest_name ? request.guest_name : "Anonymous";
+
+                return `
+                    <div class="song-meta" style="margin-top:6px;">
+                        • ${escapeHtml(request.song)}${escapeHtml(requestArtist)}
+                        — ${escapeHtml(requestName)}
+                        — ${formatTime(request.created_at)}
+                        — ${escapeHtml(request.status)}
+                    </div>
+                `;
+            }).join("");
+
+            return `
+                <div class="song${playedClass}">
+                    <div style="width:100%;">
+                        <div class="song-title">
+                            ${index + 1}. ${escapeHtml(group.displayTitle)}${escapeHtml(artist)}
+                        </div>
+
+                        <div class="song-meta">
+                            ${group.requests.length} request${group.requests.length === 1 ? "" : "s"}
+                            • ${group.pendingCount} pending
+                            • ${group.playedCount} played
+                        </div>
+
+                        <details style="margin-top:8px;">
+                            <summary class="muted">Show grouped requests</summary>
+                            ${requestList}
+                        </details>
+                    </div>
+
+                    <div class="row-buttons">
+                        <button class="small" onclick="markGroupPlayed('${hostToken}', '${group.groupId}')">
+                            Played
+                        </button>
+
+                        <button class="small danger" onclick="deleteGroup('${hostToken}', '${group.groupId}')">
                             Delete
                         </button>
                     </div>
@@ -432,6 +607,38 @@
 
         if (error) {
             alert("Could not delete request: " + error.message);
+            return;
+        }
+
+        if (currentHostEventId && currentHostToken) {
+            loadHostQueue(currentHostEventId, currentHostToken);
+        }
+    };
+
+    window.markGroupPlayed = async function(hostToken, groupId) {
+        const { error } = await supabase.rpc("mark_group_played", {
+            p_host_token: hostToken,
+            p_song_group_id: groupId
+        });
+
+        if (error) {
+            alert("Could not mark group played: " + error.message);
+            return;
+        }
+
+        if (currentHostEventId && currentHostToken) {
+            loadHostQueue(currentHostEventId, currentHostToken);
+        }
+    };
+
+    window.deleteGroup = async function(hostToken, groupId) {
+        const { error } = await supabase.rpc("delete_group_requests", {
+            p_host_token: hostToken,
+            p_song_group_id: groupId
+        });
+
+        if (error) {
+            alert("Could not delete group: " + error.message);
             return;
         }
 
@@ -492,15 +699,12 @@
                 return;
             }
 
-            const { error } = await supabase
-                .from("requests")
-                .insert({
-                    event_id: event.id,
-                    song: song,
-                    artist: artist,
-                    guest_name: guestName,
-                    status: "pending"
-                });
+            const { error } = await supabase.rpc("submit_request", {
+                p_guest_code: guestCode,
+                p_song: song,
+                p_artist: artist,
+                p_guest_name: guestName
+            });
 
             if (error) {
                 document.getElementById("statusText").innerText =
@@ -517,7 +721,6 @@
 
         await loadGuestQueue(event.id);
 
-        // Realtime update
         realtimeChannel = supabase
             .channel("guest-requests-" + event.id)
             .on(
@@ -534,7 +737,6 @@
             )
             .subscribe();
 
-        // Backup polling update, in case realtime is slow or disabled
         refreshTimer = setInterval(function() {
             loadGuestQueue(event.id);
         }, 2500);
@@ -549,7 +751,14 @@
 
         const { data, error } = await supabase
             .from("requests")
-            .select("*")
+            .select(`
+                *,
+                song_groups:song_group_id (
+                    id,
+                    display_title,
+                    display_artist
+                )
+            `)
             .eq("event_id", eventId)
             .eq("status", "pending")
             .order("created_at", { ascending: true });
@@ -564,19 +773,41 @@
             return;
         }
 
-        queue.innerHTML = data.map((item, index) => {
-            const artist = item.artist ? " — " + item.artist : "";
-            const name = item.guest_name ? "Requested by " + item.guest_name : "Anonymous request";
+        const groups = new Map();
+
+        data.forEach((item) => {
+            const groupId = item.song_group_id || item.id;
+            const groupData = item.song_groups || null;
+
+            if (!groups.has(groupId)) {
+                groups.set(groupId, {
+                    displayTitle: groupData ? groupData.display_title : item.song,
+                    displayArtist: groupData ? groupData.display_artist : item.artist,
+                    firstCreatedAt: item.created_at,
+                    count: 0
+                });
+            }
+
+            groups.get(groupId).count += 1;
+        });
+
+        const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+            return new Date(a.firstCreatedAt) - new Date(b.firstCreatedAt);
+        });
+
+        queue.innerHTML = sortedGroups.map((group, index) => {
+            const artist = group.displayArtist ? " — " + group.displayArtist : "";
+            const countText = group.count > 1 ? ` • ${group.count} requests` : "";
 
             return `
                 <div class="song">
                     <div>
                         <div class="song-title">
-                            ${index + 1}. ${escapeHtml(item.song)}${escapeHtml(artist)}
+                            ${index + 1}. ${escapeHtml(group.displayTitle)}${escapeHtml(artist)}
                         </div>
 
                         <div class="song-meta">
-                            ${escapeHtml(name)}
+                            Pending${escapeHtml(countText)}
                         </div>
                     </div>
                 </div>
